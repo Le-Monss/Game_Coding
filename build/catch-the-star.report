@@ -1,0 +1,316 @@
+
+; ******** Source: src/catch_the_star.asm
+     1                          ; Catch the Star -- a first Commodore 64 game, written for ACME.
+     2                          ; Build: acme -f cbm -o build/catch-the-star.prg src/catch_the_star.asm
+     3                          ; A semicolon starts a comment, like # in Python.
+     4                          !cpu 6510
+     5                          
+     6                          SCREEN       = $0400             ; 40 columns * 25 rows of character numbers
+     7                          COLOR        = $d800             ; one color byte per screen position
+     8                          JOY2         = $dc00             ; CIA 1 port A: joystick port 2
+     9                          JOY2_DDR     = $dc02             ; 0 bits mean input pins
+    10                          PTR          = $fb               ; $fb/$fc form a 16-bit address (zero page)
+    11                          PLAYER_CHAR  = 0                 ; screen code for @ in uppercase character ROM
+    12                          STAR_CHAR    = 42                ; screen code for *
+    13                          TOP_ROW      = 3                 ; rows 0, 1, 2 belong to the heading
+    14                          BOTTOM_ROW   = 23                ; row 24 is the bottom border
+    15                          MOVE_FRAMES  = 5                 ; one move per 5 frames: PAL 10 / NTSC 12 per sec
+    16                          SCORE_SCREEN = SCREEN + (title_score - title)
+    17                          
+    18                          ; A PRG begins with a load address, added by ACME's '-f cbm' option.
+    19                          ; These bytes describe the BASIC line: 10 SYS2064
+    20                          * = $0801
+    21  0801 0b08                   !word basic_end             ; pointer to the next BASIC line
+    22  0803 0a00                   !word 10                    ; BASIC line number
+    23  0805 9e                     !byte $9e                   ; token for SYS
+    24  0806 32303634               !text "2064"                ; decimal $0810: start of our machine code
+    25  080a 00                     !byte 0                     ; end of this line
+    26                          basic_end:
+    27  080b 0000                   !word 0                     ; no more BASIC lines
+    28  080d 000000                 !fill $0810 - *, 0
+    29                          
+    30                          start:
+    31  0810 78                     sei                         ; pause normal IRQs; we handle timing ourselves
+    32  0811 d8                     cld                         ; use ordinary binary arithmetic, not decimal mode
+    33                          
+    34                              ; Select VIC bank 0 and the usual $0400 screen / uppercase ROM font.
+    35  0812 ad02dd                 lda $dd02
+    36  0815 0903                   ora #3                      ; like value | 3 in Python
+    37  0817 8d02dd                 sta $dd02                   ; make VIC bank-select pins outputs
+    38  081a ad00dd                 lda $dd00
+    39  081d 0903                   ora #3
+    40  081f 8d00dd                 sta $dd00
+    41  0822 a914                   lda #$14
+    42  0824 8d18d0                 sta $d018
+    43  0827 a91b                   lda #$1b                    ; normal 25-row text mode, screen on
+    44  0829 8d11d0                 sta $d011
+    45  082c a908                   lda #$08                    ; normal 40-column text mode
+    46  082e 8d16d0                 sta $d016
+    47  0831 a900                   lda #0
+    48  0833 8d15d0                 sta $d015                   ; hide sprites
+    49  0836 8d21d0                 sta $d021                   ; black background
+    50  0839 8d02dc                 sta JOY2_DDR                ; joystick port A pins are all inputs
+    51  083c a906                   lda #6
+    52  083e 8d20d0                 sta $d020                   ; blue border
+    53                          
+    54                              ; Fill exactly 1000 screen/color cells. The final 256-byte block overlaps
+    55                              ; the previous one slightly, avoiding writes past the screen into memory.
+    56  0841 a200                   ldx #0                      ; X is a tiny loop counter (0..255)
+    57                          clear_screen:
+    58  0843 a920                   lda #32                     ; space character
+    59  0845 9d0004                 sta SCREEN,x
+    60  0848 9d0005                 sta SCREEN+256,x
+    61  084b 9d0006                 sta SCREEN+512,x
+    62  084e 9de806                 sta SCREEN+744,x
+    63  0851 a901                   lda #1                      ; white
+    64  0853 9d00d8                 sta COLOR,x
+    65  0856 9d00d9                 sta COLOR+256,x
+    66  0859 9d00da                 sta COLOR+512,x
+    67  085c 9de8da                 sta COLOR+744,x
+    68  085f e8                     inx                         ; like x = (x + 1) % 256
+    69  0860 d0e1                   bne clear_screen            ; loop until X wraps back to zero
+    70                          
+    71  0862 a200                   ldx #0
+    72                          copy_title:
+    73  0864 bdf209                 lda title,x                 ; like title[x]
+    74  0867 9d0004                 sta SCREEN,x
+    75  086a e8                     inx
+    76  086b e01c                   cpx #title_end-title
+    77  086d d0f5                   bne copy_title
+    78  086f a200                   ldx #0
+    79                          copy_help:
+    80  0871 bd0e0a                 lda help_text,x
+    81  0874 9d2804                 sta SCREEN+40,x
+    82  0877 e8                     inx
+    83  0878 e022                   cpx #help_end-help_text
+    84  087a d0f5                   bne copy_help
+    85  087c a227                   ldx #39
+    86                          draw_borders:
+    87  087e a92d                   lda #45                     ; hyphen screen code
+    88  0880 9d5004                 sta SCREEN+80,x
+    89  0883 9dc007                 sta SCREEN+960,x
+    90  0886 ca                     dex                         ; like x -= 1
+    91  0887 10f5                   bpl draw_borders            ; continue through X=0; stop at X=$ff (-1)
+    92                          
+    93                              ; Initialize every mutable variable so RUN also starts a fresh game.
+    94  0889 a90a                   lda #10
+    95  088b 8d620a                 sta player_x
+    96  088e a90c                   lda #12
+    97  0890 8d630a                 sta player_y
+    98  0893 a900                   lda #0
+    99  0895 8d690a                 sta score_digits
+   100  0898 8d6a0a                 sta score_digits+1
+   101  089b 8d6b0a                 sta score_digits+2
+   102  089e 8d6c0a                 sta score_digits+3
+   103  08a1 8d660a                 sta joy_state
+   104  08a4 a905                   lda #MOVE_FRAMES
+   105  08a6 8d670a                 sta frames_left
+   106  08a9 ad04dc                 lda $dc04                   ; timer + raster provide a variable starting seed
+   107  08ac 4d12d0                 eor $d012                   ; EOR is Python's ^ (exclusive OR)
+   108  08af 0901                   ora #1                      ; the random generator must never start at zero
+   109  08b1 8d680a                 sta random_state
+   110  08b4 20a909                 jsr show_score
+   111  08b7 20c609                 jsr new_star
+   112  08ba 206909                 jsr draw_star
+   113  08bd 205909                 jsr draw_player
+   114                          
+   115                          main_loop:
+   116  08c0 20d308                 jsr wait_frame              ; JSR is like calling a Python function
+   117  08c3 ce670a                 dec frames_left
+   118  08c6 d0f8                   bne main_loop
+   119  08c8 a905                   lda #MOVE_FRAMES
+   120  08ca 8d670a                 sta frames_left
+   121  08cd 20e708                 jsr move_player
+   122  08d0 4cc008                 jmp main_loop               ; like while True: ...
+   123                          
+   124                          ; Wait for raster line 250 once. $d011 bit 7 excludes lines 256..311 on PAL.
+   125                          ; Waiting to leave the line prevents counting the same frame more than once.
+   126                          wait_frame:
+   127  08d3 ad11d0                 lda $d011
+   128  08d6 30fb                   bmi wait_frame
+   129  08d8 ad12d0                 lda $d012
+   130  08db c9fa                   cmp #250
+   131  08dd d0f4                   bne wait_frame
+   132                          wait_leave:
+   133  08df ad12d0                 lda $d012
+   134  08e2 c9fa                   cmp #250
+   135  08e4 f0f9                   beq wait_leave
+   136  08e6 60                     rts                         ; like returning from a function
+   137                          
+   138                          move_player:
+   139                              ; Erase the old @ before changing its coordinates.
+   140  08e7 ae630a                 ldx player_y
+   141  08ea ac620a                 ldy player_x
+   142  08ed a920                   lda #32
+   143  08ef 207909                 jsr plot
+   144  08f2 ad00dc                 lda JOY2
+   145  08f5 8d660a                 sta joy_state               ; read once so all directions use one snapshot
+   146                          
+   147                              ; Joystick bits are ACTIVE LOW: a pressed direction is 0, not 1.
+   148                              ; AND #1 is like joy_state & 1; BNE skips when the direction is released.
+   149  08f8 ad660a                 lda joy_state
+   150  08fb 2901                   and #1                      ; bit 0 = up
+   151  08fd d00a                   bne check_down
+   152  08ff ad630a                 lda player_y
+   153  0902 c903                   cmp #TOP_ROW                ; CMP sets flags, like the comparison in an if
+   154  0904 f003                   beq check_down
+   155  0906 ce630a                 dec player_y
+   156                          check_down:
+   157  0909 ad660a                 lda joy_state
+   158  090c 2902                   and #2                      ; bit 1 = down
+   159  090e d00a                   bne check_left
+   160  0910 ad630a                 lda player_y
+   161  0913 c917                   cmp #BOTTOM_ROW
+   162  0915 f003                   beq check_left
+   163  0917 ee630a                 inc player_y
+   164                          check_left:
+   165  091a ad660a                 lda joy_state
+   166  091d 2904                   and #4                      ; bit 2 = left
+   167  091f d008                   bne check_right
+   168  0921 ad620a                 lda player_x
+   169  0924 f003                   beq check_right             ; already at column 0
+   170  0926 ce620a                 dec player_x
+   171                          check_right:
+   172  0929 ad660a                 lda joy_state
+   173  092c 2908                   and #8                      ; bit 3 = right; bit 4 (fire) is unused
+   174  092e d00a                   bne check_catch
+   175  0930 ad620a                 lda player_x
+   176  0933 c927                   cmp #39
+   177  0935 f003                   beq check_catch
+   178  0937 ee620a                 inc player_x
+   179                          
+   180                          check_catch:
+   181  093a ad620a                 lda player_x
+   182  093d cd640a                 cmp star_x
+   183  0940 d014                   bne redraw_player
+   184  0942 ad630a                 lda player_y
+   185  0945 cd650a                 cmp star_y
+   186  0948 d00c                   bne redraw_player
+   187                              ; Both coordinates match: score += 1, then relocate the star.
+   188  094a 209409                 jsr increment_score
+   189  094d 20a909                 jsr show_score
+   190  0950 20c609                 jsr new_star
+   191  0953 206909                 jsr draw_star
+   192                          redraw_player:
+   193  0956 4c5909                 jmp draw_player             ; draw_player's RTS returns to our caller
+   194                          
+   195                          draw_player:
+   196  0959 ae630a                 ldx player_y
+   197  095c ac620a                 ldy player_x
+   198  095f a900                   lda #PLAYER_CHAR
+   199  0961 207909                 jsr plot
+   200  0964 a901                   lda #1                      ; white @
+   201  0966 4c8809                 jmp plot_color
+   202                          draw_star:
+   203  0969 ae650a                 ldx star_y
+   204  096c ac640a                 ldy star_x
+   205  096f a92a                   lda #STAR_CHAR
+   206  0971 207909                 jsr plot
+   207  0974 a907                   lda #7                      ; yellow *
+   208  0976 4c8809                 jmp plot_color
+   209                          
+   210                          ; Input: A = character, X = row, Y = column.
+   211                          ; A row lookup table avoids multiplication: address = $0400 + row*40 + column.
+   212                          plot:
+   213  0979 48                     pha                         ; save A on the stack, like a temporary variable
+   214  097a bd300a                 lda row_low,x
+   215  097d 85fb                   sta PTR
+   216  097f bd490a                 lda row_high,x
+   217  0982 85fc                   sta PTR+1
+   218  0984 68                     pla                         ; restore A
+   219  0985 91fb                   sta (PTR),y                 ; like memory[row_address + column] = character
+   220  0987 60                     rts
+   221                          ; Call just after plot: A = color; PTR and Y still point to the same cell.
+   222                          plot_color:
+   223  0988 48                     pha
+   224  0989 a5fc                   lda PTR+1
+   225  098b 18                     clc                         ; clear carry before adding (no extra +1)
+   226  098c 69d4                   adc #$d4                    ; $0400 + $d400 = $d800, the color RAM
+   227  098e 85fc                   sta PTR+1
+   228  0990 68                     pla
+   229  0991 91fb                   sta (PTR),y
+   230  0993 60                     rts
+   231                          
+   232                          ; Store four separate decimal digits, like a Python list [0, 0, 0, 0].
+   233                          ; Carry to the left at 10; after 9999 the display wraps to 0000.
+   234                          increment_score:
+   235  0994 a203                   ldx #3
+   236                          next_digit:
+   237  0996 fe690a                 inc score_digits,x
+   238  0999 bd690a                 lda score_digits,x
+   239  099c c90a                   cmp #10
+   240  099e d008                   bne score_done
+   241  09a0 a900                   lda #0
+   242  09a2 9d690a                 sta score_digits,x
+   243  09a5 ca                     dex
+   244  09a6 10ee                   bpl next_digit
+   245                          score_done:
+   246  09a8 60                     rts
+   247                          show_score:
+   248  09a9 a200                   ldx #0
+   249                          score_loop:
+   250  09ab bd690a                 lda score_digits,x
+   251  09ae 18                     clc
+   252  09af 6930                   adc #48                     ; convert 0..9 to screen codes for '0'..'9'
+   253  09b1 9d1804                 sta SCORE_SCREEN,x
+   254  09b4 e8                     inx
+   255  09b5 e004                   cpx #4
+   256  09b7 d0f2                   bne score_loop
+   257  09b9 60                     rts
+   258                          
+   259                          ; An 8-bit LFSR: shift, then conditionally XOR a feedback value.
+   260                          ; It cycles through 255 nonzero states; this is for a game, not security.
+   261                          random_byte:
+   262  09ba ad680a                 lda random_state
+   263  09bd 0a                     asl                         ; like a = (a << 1) & 255; old bit 7 goes to carry
+   264  09be 9002                   bcc random_ready
+   265  09c0 491d                   eor #$1d
+   266                          random_ready:
+   267  09c2 8d680a                 sta random_state
+   268  09c5 60                     rts
+   269                          new_star:
+   270  09c6 20ba09                 jsr random_byte
+   271  09c9 293f                   and #63                     ; candidate column 0..63
+   272  09cb c928                   cmp #40
+   273  09cd b0f7                   bcs new_star                ; reject 40..63 instead of biasing with modulo
+   274  09cf 8d640a                 sta star_x
+   275                          new_star_row:
+   276  09d2 20ba09                 jsr random_byte
+   277  09d5 291f                   and #31                     ; candidate row offset 0..31
+   278  09d7 c915                   cmp #21
+   279  09d9 b0f7                   bcs new_star_row            ; only 21 playable rows
+   280  09db 18                     clc
+   281  09dc 6903                   adc #TOP_ROW
+   282  09de 8d650a                 sta star_y
+   283  09e1 ad640a                 lda star_x
+   284  09e4 cd620a                 cmp player_x
+   285  09e7 d008                   bne star_ready
+   286  09e9 ad650a                 lda star_y
+   287  09ec cd630a                 cmp player_y
+   288  09ef f0d5                   beq new_star                ; never hide the new star under the player
+   289                          star_ready:
+   290  09f1 60                     rts
+   291                          
+   292                          ; With ACME's default text encoding, lowercase source letters under !scr become
+   293                          ; screen codes 1..26: UPPERCASE letters in the C64's uppercase/graphics font.
+   294                          title:
+   295  09f2 0301140308201408...    !scr "catch the star   score: "
+   296                          title_score:
+   297  0a0a 30303030               !scr "0000"
+   298                          title_end:
+   299                          help_text:
+   300  0a0e 0a0f19131409030b...    !scr "joystick port 2   you: @   star: *"
+   301                          help_end:
+   302                          row_low:
+   303  0a30 00285078a0c8f018...    !for row, 0, 24 { !byte <(SCREEN + row*40) }
+   304                          row_high:
+   305  0a49 0404040404040405...    !for row, 0, 24 { !byte >(SCREEN + row*40) }
+   306                          
+   307  0a62 0a                 player_x:     !byte 10
+   308  0a63 0c                 player_y:     !byte 12
+   309  0a64 00                 star_x:       !byte 0
+   310  0a65 00                 star_y:       !byte 0
+   311  0a66 00                 joy_state:    !byte 0
+   312  0a67 05                 frames_left:  !byte MOVE_FRAMES
+   313  0a68 01                 random_state: !byte 1
+   314  0a69 00000000           score_digits: !byte 0, 0, 0, 0

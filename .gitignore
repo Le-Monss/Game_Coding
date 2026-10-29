@@ -1,0 +1,4 @@
+# Local tools, temporary files, and Python caches are not game deliverables.
+/work/
+__pycache__/
+*.pyc
