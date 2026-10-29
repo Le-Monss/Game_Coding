@@ -44,16 +44,16 @@ sudo usermod -aG vboxsf "$USER"
 Alternatively, download and extract the ZIP using the browser **inside Ubuntu**.
 You can also copy just `build/catch-the-star.prg` or `.d64`; either plays by itself.
 
-**From GitHub after these changes have been committed and pushed:**
+**From GitHub:** the game is on branch `codex/catch-the-star`:
 
 ```sh
-git clone https://github.com/Le-Monss/Game_Coding.git
+git clone --branch codex/catch-the-star https://github.com/Le-Monss/Game_Coding.git
 cd Game_Coding
 ```
 
-If you already cloned it, enter that checkout and run `git pull`. If the game
-was saved on a separate branch, select that branch first. Local cloud edits do
-not appear on GitHub until committed and pushed.
+If you already cloned it, enter that checkout, run `git fetch origin`, then
+`git switch codex/catch-the-star` and `git pull`. You can also select this
+branch on GitHub and choose **Code → Download ZIP**.
 
 ## Play in VICE
 
